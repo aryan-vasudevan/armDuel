@@ -14,15 +14,23 @@ s.connect((ESP32_IP, PORT))
 print("Connected to ESP32")
 
 while True:
-    command = input("Press [a] to push, [q] to quit: ").strip()
+    command = input("Press [a] to push A, [b] to push B, [r] to reset, [q] to quit: ").strip()
 
     if command == "a":
-        s.sendall(b"MOVE_PLAYER\n")
+        s.sendall(b"MOVE_PLAYER_A\n")
+        data = s.recv(1024)
+        print("ESP32 responded:", data.decode().strip())
+    elif command == "b":
+        s.sendall(b"MOVE_PLAYER_B\n")
         data = s.recv(1024)
         print("ESP32 responded:", data.decode().strip())
     elif command == "q":
         print("Exiting...")
         break
+    elif command == "r":
+        s.sendall(b"RESET\n")
+        data = s.recv(1024)
+        print("ESP32 responded:", data.decode().strip())
     else:
         print("Unknown command")
 

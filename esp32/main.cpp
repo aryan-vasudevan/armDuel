@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include "ESP32Servo.h"
 #include "playerMove.cpp"
+#include <string>
 
 // const char* ssid = "network name";
 // const char* password = "network password";
@@ -48,15 +49,15 @@ void loop() {
 
         while (client.connected()) {
             // 1 player mode resistance
-            unsigned long now = millis();
-            if (now - lastMoveTime >= moveInterval) {
-                lastMoveTime = now;
-                if (playerPos < 180) {
-                    playerPos += stepForward;
-                    playerServo.write(playerPos);
-                    Serial.println(playerPos);
-                }
-            }
+            // unsigned long now = millis();
+            // if (now - lastMoveTime >= moveInterval) {
+            //     lastMoveTime = now;
+            //     if (playerPos < 180) {
+            //         playerPos += stepForward;
+            //         playerServo.write(playerPos);
+            //         Serial.println(playerPos);
+            //     }
+            // }
 
             // Handle incoming command
             if (client.available()) {
@@ -66,9 +67,7 @@ void loop() {
                 Serial.print("Received: ");
                 Serial.println(command);
 
-                if (command == "MOVE_PLAYER") {
-                    playerMove(playerServo, playerPos);
-                }
+                playerMove(command);
 
                 client.flush();
             }
