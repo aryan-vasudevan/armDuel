@@ -2,12 +2,12 @@ import curses
 import time
 from random import shuffle
 from db import connectDB
-from esp_controller import send_push
+from esp_controller import send_push, GameOver
 
 def load_shared_questions():
     db = connectDB()
     questions = db["questions"]
-    sampled = list(questions.aggregate([{ "$sample": { "size": 10 } }]))
+    sampled = list(questions.aggregate([{"$sample": {"size": 10}}]))
     return [format_question(q) for q in sampled]
 
 def format_question(q):
@@ -51,9 +51,14 @@ def draw_screen(stdscr, player_qs, index, last_msg, cooldown_until):
 
     stdscr.refresh()
 
+    # Draw quit instruction
+    stdscr.addstr(height - 2, 2, "Press 'q' to quit at any time.")
+    stdscr.refresh()
+
+
 def game(stdscr):
     curses.curs_set(0)
-    stdscr.nodelay(True)  # allow non-blocking getch()
+    stdscr.nodelay(True)  # non-blocking getch
 
     shared = load_shared_questions()
     player_qs = {"A": shared, "B": shared}
@@ -65,7 +70,7 @@ def game(stdscr):
         ord('a'): ("A", 0), ord('s'): ("A", 1),
         ord('d'): ("A", 2), ord('f'): ("A", 3),
         ord('j'): ("B", 0), ord('k'): ("B", 1),
-        ord('l'): ("B", 2), ord(';'):("B", 3),
+        ord('l'): ("B", 2), ord(';'): ("B", 3),
         ord('q'): ("QUIT", None)
     }
 
@@ -83,27 +88,35 @@ def game(stdscr):
 
         player, sel = mapping
         if player == "QUIT":
-            break
+            return
 
         now = time.time()
-        # if still in cooldown, ignore this player's input
         if now < cooldown_until[player]:
             continue
 
         q = player_qs[player][index[player]]
         if sel == q["correct_index"]:
             last_msg[player] = "✅ Correct!"
-            send_push(player)
-            index[player] = (index[player] + 1) % len(player_qs[player])
-        else:
-            last_msg[player] = ""
-            cooldown_until[player] = now + 3  # block input for 3s
-
-        # brief pause so the “Correct!” appears
-        if last_msg[player]:
             draw_screen(stdscr, player_qs, index, last_msg, cooldown_until)
+            try:
+                send_push(player)
+            except GameOver as e:
+                # Determine winner message
+                if e.winner == "WIN_RED":
+                    win_msg = "🔴 Red side WINS!"
+                else:
+                    win_msg = "🟢 Green side WINS!"
+                stdscr.clear()
+                stdscr.addstr(curses.LINES//2, (curses.COLS - len(win_msg))//2, win_msg, curses.A_BLINK | curses.A_BOLD)
+                stdscr.refresh()
+                time.sleep(5)
+                return
+            index[player] = (index[player] + 1) % len(player_qs[player])
             time.sleep(0.5)
             last_msg[player] = ""
+        else:
+            last_msg[player] = "❌ Incorrect! 3s cooldown..."
+            cooldown_until[player] = now + 3
 
 if __name__ == "__main__":
     curses.wrapper(game)
