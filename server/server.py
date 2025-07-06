@@ -6,7 +6,8 @@ import os
 
 load_dotenv()
 
-SERVER_URL = str(os.getenv("SERVER_URL"))
+# SERVER_URL = str(os.getenv("SERVER_URL"))
+SERVER_URL = "0.0.0.0"
 
 rooms = {}
 
