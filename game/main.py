@@ -1,191 +1,183 @@
-import os
+# main.py
+
+from pymongo import MongoClient
+from dotenv_vault import load_dotenv
+from hashlib import sha256
 import datetime
 import threading
 import asyncio
 import websockets
 import json
-import time
 from random import shuffle
-
+import time
+import os
 import tkinter as tk
 from tkinter import messagebox
-from pymongo import MongoClient
-from dotenv_vault import load_dotenv
-from hashlib import sha256
 
-# esp32 controller
+# ESP controller imports
 from esp_controller import send_push, GameOver, reset_position
 
+# --- Initialization ---
+
+dt = datetime.datetime
 load_dotenv()
 
+# MongoDB setup
+MONGODB_URI = os.getenv("MONGODB_URI")
+client       = MongoClient(MONGODB_URI)
+db           = client["website"]
+questions    = db["questions"]
+users        = db["users"]
+game_codes   = db["game_codes"]
+game_codes.create_index("createdAt", expireAfterSeconds=180)
+
+# Reset ESP32 at startup (ephemeral connect)
 try:
     reset_position()
 except Exception as e:
-    print(f"[ERROR] Could not connect to ESP32: {e}")
+    print(f"[ERROR] Could not reset ESP32: {e}")
 
-dt = datetime.datetime
-MONGODB_URI = os.getenv("MONGODB_URI")
-client = MongoClient(MONGODB_URI)
-db = client["website"]
-questions = db["questions"]
-users = db["users"]
-game_codes = db["game_codes"]
-game_codes.create_index("createdAt", expireAfterSeconds=180)
-
+# Tkinter app
 app = tk.Tk()
 app.title("ArmDuel")
 app.geometry("500x400")
 app.resizable(False, False)
 
 SERVER_URL = os.getenv("SERVER_URL")
-ws = None
-loop = asyncio.new_event_loop()
-player_name = ""
+ws         = None
+loop       = asyncio.new_event_loop()
+
+# game state
+player_name       = ""
+player_role       = ""    # "A" for host, "B" for joiner
 current_game_code = ""
-player_role = None  # 'A' or 'B'
-
-score = 0
-user_questions = []
+score             = 0
+user_questions    = []
 current_question_index = 0
-start_button = None
-players_ready = 1
-is_host = False
-game_over = False
+game_over         = False
 
-# websocket
+# --- WebSocket Handler ---
+
 def start_ws_loop():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(ws_handler())
 
 async def ws_handler():
-    global ws, players_ready, game_over
+    global ws, game_over
     try:
         async with websockets.connect(f"ws://{SERVER_URL}:8765") as websocket:
             ws = websocket
-            await websocket.send(json.dumps({"type": "join", "room": current_game_code}))
-            while True:
-                msg = await websocket.recv()
+            await websocket.send(json.dumps({
+                "type": "join",
+                "room": current_game_code
+            }))
+
+            async for msg in websocket:
                 data = json.loads(msg)
-                if data["type"] == "game_event":
-                    if data["player"] != player_name and not game_over:
-                        process_remote_event(data["player"], data["event"], data.get("score", 0))
-                elif data["type"] == "player_joined":
-                    players_ready += 1
-                    if is_host and not game_over:
-                        await websocket.send(json.dumps({"type": "start_game", "room": current_game_code}))
-                elif data["type"] == "game_over":
-                    if data.get("winner") != player_name:
-                        def lose_screen():
-                            global game_over
-                            game_over = True
-                            clear_screen()
-                            tk.Label(app, text="You lost. 😢").pack()
-                        app.after(0, lose_screen)
-                elif data["type"] == "start_game":
-                    if not game_over:
-                        threading.Thread(target=joiner_countdown_then_start, daemon=True).start()
-    except websockets.exceptions.ConnectionClosedOK:
-        print("[INFO] Connection closed cleanly.")
+
+                # remote event (score sync)
+                if data["type"] == "game_event" and data["player"] != player_name and not game_over:
+                    process_remote_event(data["player"], data["event"], data.get("score", 0))
+
+                # host start trigger
+                elif data["type"] == "player_joined" and player_role == "A" and not game_over:
+                    await websocket.send(json.dumps({
+                        "type": "start_game",
+                        "room": current_game_code
+                    }))
+
+                # remote win
+                elif data["type"] == "game_over" and data.get("winner") != player_name:
+                    app.after(0, lambda: show_end_screen(False))
+
+                # start countdown
+                elif data["type"] == "start_game" and not game_over:
+                    threading.Thread(target=joiner_countdown_then_start, daemon=True).start()
+
     except Exception as e:
         print(f"[ERROR] WebSocket error: {e}")
 
 def send_game_event(event):
     if ws:
         msg = json.dumps({
-            "type": "game_event",
-            "room": current_game_code,
+            "type":  "game_event",
+            "room":  current_game_code,
             "player": player_name,
             "event": event,
             "score": score
         })
         asyncio.run_coroutine_threadsafe(ws.send(msg), loop)
 
-# gui
+# --- Tkinter UI Helpers ---
+
 def clear_screen():
-    for widget in app.winfo_children():
-        widget.destroy()
+    for w in app.winfo_children():
+        w.destroy()
 
-def update_score(name, won):
-    user = users.find_one({"userName": name})
-    if not user:
-        users.insert_one({"userName": name, "score": 10 if won else 0})
-    else:
-        new_score = user["score"] + (10 if won else -5)
-        users.update_one({"userName": name}, {"$set": {"score": new_score}})
-
-def get_leaderboard():
-    return list(users.find().sort("score", -1).limit(5))
+def show_end_screen(won: bool):
+    global game_over
+    game_over = True
+    clear_screen()
+    text = "You won! 🎉" if won else "You lost. 😢"
+    tk.Label(app, text=text, font=("Helvetica", 16)).pack()
 
 def create_game(name):
-    game_code = sha256(str(dt.now()).encode() + name.encode()).hexdigest()[:6]
+    code = sha256(f"{dt.now()}-{name}".encode()).hexdigest()[:6]
     game_codes.insert_one({
-        "code": game_code,
+        "code":      code,
         "createdAt": dt.now(datetime.timezone.utc),
         "createdBy": name
     })
-    return game_code
+    return code
 
 def display_join_game_screen():
-    global player_role, player_name
-    player_name = name_entry.get()
-    player_role = 'B'
+    global player_name, player_role
+    player_name = name_entry.get().strip()
+    player_role = "B"
     clear_screen()
-    code = tk.Entry(app)
-    code.pack()
-    tk.Button(app, text="Join with Code", command=lambda: join_game_with_code(code.get())).pack()
 
-def join_game_with_code(code):
-    global current_game_code, is_host
-    is_host = False
-    current_game_code = code
-    entry = game_codes.find_one({"code": code})
-    if not entry:
-        messagebox.showerror("Error", "Game code not found.")
-        return
-    game_codes.delete_one({"code": code})
-    clear_screen()
-    threading.Thread(target=start_ws_loop, daemon=True).start()
-    tk.Label(app, text="Waiting for host to start...").pack()
+    tk.Label(app, text="Enter Code:").pack(pady=5)
+    code_entry = tk.Entry(app)
+    code_entry.pack(pady=5)
+
+    def on_join():
+        code = code_entry.get().strip()
+        if not game_codes.find_one({"code": code}):
+            messagebox.showerror("Error", "Game code not found.")
+            return
+        game_codes.delete_one({"code": code})
+        clear_screen()
+        threading.Thread(target=start_ws_loop, daemon=True).start()
+        tk.Label(app, text="Waiting for host…").pack()
+    tk.Button(app, text="Join", command=on_join).pack(pady=10)
 
 def display_game_screen():
-    global player_name, current_game_code, is_host, player_role
-    is_host = True
-    player_role = 'A'
-    player_name = name_entry.get()
+    global player_name, player_role, current_game_code
+    player_name       = name_entry.get().strip()
+    player_role       = "A"
     current_game_code = create_game(player_name)
     clear_screen()
-    tk.Label(app, text="Your game code is:").pack()
-    tk.Label(app, text=current_game_code).pack()
+
+    tk.Label(app, text="Your game code is:", font=("Helvetica", 12)).pack(pady=5)
+    tk.Label(app, text=current_game_code, font=("Courier", 24)).pack(pady=10)
+
     threading.Thread(target=start_ws_loop, daemon=True).start()
 
-# game logic
 def joiner_countdown_then_start():
     for i in range(3, 0, -1):
         clear_screen()
-        tk.Label(app, text=f"Game starting in {i}...").pack()
+        tk.Label(app, text=f"Game starts in {i}…", font=("Helvetica", 18)).pack()
         app.update()
         time.sleep(1)
     start_game()
 
+# --- Quiz Logic ---
+
 def process_remote_event(player, event, remote_score):
     global score
     score = -remote_score
-    app.after(0, show_current_question_only)
+    app.after(0, show_question)
 
-# Question display
-def show_current_question_only():
-    global current_question_index
-    clear_screen()
-    if current_question_index >= len(user_questions):
-        tk.Label(app, text="Game over! Out of questions.").pack()
-        return
-    curQ = user_questions[current_question_index]
-    tk.Label(app, text=f"Your Score: {score}").pack()
-    tk.Label(app, text=curQ["question"]).pack()
-    for choice in curQ["shuffled_choices"]:
-        tk.Button(app, text=choice, command=lambda c=choice: check_answer(curQ, c)).pack()
-
-# Main game
 def start_game():
     global user_questions, current_question_index, score
     user_questions = list(questions.aggregate([{"$sample": {"size": 10}}]))
@@ -197,74 +189,53 @@ def start_game():
     show_question()
 
 def show_question():
-    clear_screen()
     global current_question_index
-    if current_question_index >= len(user_questions):
-        tk.Label(app, text="Game over! Out of questions.").pack()
-        return
-    curQ = user_questions[current_question_index]
-    tk.Label(app, text=f"Your Score: {score}").pack()
-    tk.Label(app, text=curQ["question"]).pack()
-    for choice in curQ["shuffled_choices"]:
-        tk.Button(app, text=choice, command=lambda c=choice: check_answer(curQ, c)).pack()
+    clear_screen()
 
-# Answer checking with ESP32 push
-def check_answer(question, selected_choice):
-    global current_question_index, score, game_over
-    if game_over:
+    if current_question_index >= len(user_questions):
+        show_end_screen(score > 0)
         return
-    if selected_choice == question["correctAnswer"]:
+
+    q = user_questions[current_question_index]
+    tk.Label(app, text=f"Score: {score}", font=("Helvetica", 14)).pack(pady=5)
+    tk.Label(app, text=q["question"], wraplength=480).pack(pady=10)
+
+    for choice in q["shuffled_choices"]:
+        tk.Button(app, text=choice,
+                  command=lambda c=choice: check_answer(q, c)
+        ).pack(fill="x", padx=50, pady=2)
+
+def check_answer(question, selected):
+    global score, current_question_index
+
+    if selected == question["correctAnswer"]:
         score += 1
         send_game_event("correct")
+
+        # send to ESP32
         try:
             send_push(player_role)
         except GameOver as e:
-            game_over = True
-            clear_screen()
-            if (e.winner == "WIN_RED" and player_role == 'A') or (e.winner == "WIN_GREEN" and player_role == 'B'):
-                tk.Label(app, text="You won! 🎉").pack()
-            else:
-                tk.Label(app, text="You lost. 😢").pack()
+            won = ((e.winner == "WIN_RED" and player_role == "A") or
+                   (e.winner == "WIN_GREEN" and player_role == "B"))
+            show_end_screen(won)
             return
-        if check_end_game():
-            return
-        current_question_index += 1
-        show_question()
+
     else:
-        clear_screen()
-        tk.Label(app, text="Wrong! Try again in 2 seconds...").pack()
+        tk.Label(app, text="Wrong! Next in 2s...", fg="red").pack()
         app.update()
-        app.after(2000, lambda: _advance_after_delay())
+        time.sleep(2)
 
-def _advance_after_delay():
-    global current_question_index
-    if not game_over:
-        current_question_index += 1
-        show_question()
+    current_question_index += 1
+    show_question()
 
-# End-game checks
-def check_end_game():
-    global game_over
-    if score >= 3:
-        game_over = True
-        clear_screen()
-        tk.Label(app, text="You won! 🎉").pack()
-        if ws:
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "game_over", "room": current_game_code, "winner": player_name})), loop
-            )
-        return True
-    elif score <= -3:
-        game_over = True
-        clear_screen()
-        tk.Label(app, text="You lost. 😢").pack()
-        return True
-    return False
+# --- Main ---
 
-# Start GUI
-tk.Label(app, text="Enter your name:").pack()
+tk.Label(app, text="Enter your name:").pack(pady=10)
 name_entry = tk.Entry(app)
-name_entry.pack()
-tk.Button(app, text="Create Game", command=display_game_screen).pack()
-tk.Button(app, text="Join Game", command=display_join_game_screen).pack()
+name_entry.pack(pady=5)
+
+tk.Button(app, text="Create Game", command=display_game_screen).pack(pady=5)
+tk.Button(app, text="Join Game",   command=display_join_game_screen).pack(pady=5)
+
 app.mainloop()
