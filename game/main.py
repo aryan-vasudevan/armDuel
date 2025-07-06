@@ -6,6 +6,7 @@ import threading
 import asyncio
 import websockets
 import json
+from random import shuffle
 
 import os
 import tkinter as tk
@@ -125,12 +126,46 @@ def show_remote_event(player, event):
     messagebox.showinfo("Update", f"{player} got it {event}!")
 
 def start_game():
-    userQuestions = list(questions.aggregate([{"$sample": {"size": 10}}]))
-    for q in userQuestions:
-        print(q)
+    global user_questions, current_question_index
+    user_questions = list(questions.aggregate([{"$sample": {"size": 10}}]))
+    current_question_index = 0
+    show_question()
 
-    tk.Label(app, text="Game in progress...").pack()
-    tk.Button(app, text="Simulate Correct Answer", command=lambda: send_game_event("correct")).pack()
+def show_question():
+    clear_screen()
+    global current_question_index
+
+    if current_question_index >= len(user_questions):
+        tk.Label(app, text="Game over!").pack()
+        return
+
+    curQ = user_questions[current_question_index]
+    choices = curQ["wrongAnswers"] + [curQ["correctAnswer"]]
+    shuffle(choices)
+
+    tk.Label(app, text=curQ["question"]).pack()
+
+    for choice in choices:
+        tk.Button(app, text=choice, command=lambda c=choice: check_answer(curQ, c)).pack()
+
+def check_answer(question, selected_choice):
+    global current_question_index
+
+    if selected_choice == question["correctAnswer"]:
+        messagebox.showinfo("Correct!", "You got it right!")
+        send_game_event("correct")
+    else:
+        messagebox.showinfo("Wrong", "That's not correct.")
+
+    current_question_index += 1
+    show_question()
+
+
+    # tk.Label(app, text="Game in progress...").pack()
+    # tk.Button(app, text="Simulate Correct Answer", command=lambda: send_game_event("correct")).pack()
+
+def check_answer(curQ, num):
+    pass
 
 # main
 tk.Label(app, text="Enter your name:").pack()

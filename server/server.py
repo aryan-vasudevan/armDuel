@@ -29,22 +29,42 @@ async def handler(websocket):
                     }))
                     continue
 
-                rooms.setdefault(room, []).append(websocket)
+                if room not in rooms:
+                    rooms[room] = []
+                rooms[room].append(websocket)
                 current_room = room
-                print(f"[INFO] Client {websocket.remote_address} joined room: {room}")
+                print(f"[INFO] Client joined room: {room} (total: {len(rooms[room])})")
+
+                if len(rooms[room]) == 2:
+                    print(f"[INFO] Room {room} is full. Starting game.")
+                    for client in rooms[room]:
+                        try:
+                            await client.send(json.dumps({
+                                "type": "start_game"
+                            }))
+                        except Exception as e:
+                            print(f"[ERROR] Failed to send start_game to client: {e}")
 
             elif msg_type == "game_event" and current_room:
-                print(f"[INFO] Broadcasting game_event from {data.get('player')} in room {current_room}")
+                print(f"[INFO] Broadcasting game_event in room {current_room}")
                 for client in rooms.get(current_room, []):
                     if client != websocket:
                         try:
                             await client.send(json.dumps({
                                 "type": "game_event",
                                 "player": data.get("player"),
-                                "event": data.get("event")
+                                "event": data.get("event"),
+                                "score": data.get("score")
                             }))
                         except Exception as e:
-                            print(f"[ERROR] Failed to send message to client {client.remote_address}: {e}")
+                            print(f"[ERROR] Failed to send message to client: {e}")
+            elif msg_type == "game_over" and current_room:
+                for client in rooms[current_room]:
+                    if client != websocket:
+                        await client.send(json.dumps({
+                            "type": "game_over",
+                            "winner": data.get("winner")
+                        }))
 
             else:
                 await websocket.send(json.dumps({
@@ -53,19 +73,18 @@ async def handler(websocket):
                 }))
 
     except websockets.exceptions.ConnectionClosed as e:
-        print(f"[INFO] Client disconnected: {websocket.remote_address} - Code: {e.code} Reason: {e.reason}")
+        print(f"[INFO] Client disconnected - Code: {e.code} Reason: {e.reason}")
     except Exception as e:
         print(f"[ERROR] Server error: {e}")
     finally:
         if current_room and websocket in rooms.get(current_room, []):
             rooms[current_room].remove(websocket)
-            print(f"[INFO] Removed client {websocket.remote_address} from room {current_room}")
+            print(f"[INFO] Removed client from room {current_room}")
 
 async def main():
-    # Disable automatic ping/pong to reduce idle disconnections, adjust as needed
     async with websockets.serve(handler, "0.0.0.0", 8765, ping_interval=None):
         print("WebSocket server running on ws://localhost:8765")
-        await asyncio.Future()  # Run forever
+        await asyncio.Future()  # run forever
 
 if __name__ == "__main__":
     asyncio.run(main())
