@@ -1,6 +1,12 @@
 import asyncio
 import websockets
 import json
+from dotenv_vault import load_dotenv
+import os
+
+load_dotenv()
+
+SERVER_URL = str(os.getenv("SERVER_URL"))
 
 rooms = {}
 
@@ -82,8 +88,8 @@ async def handler(websocket):
             print(f"[INFO] Removed client from room {current_room}")
 
 async def main():
-    async with websockets.serve(handler, "0.0.0.0", 8765, ping_interval=None):
-        print("WebSocket server running on ws://localhost:8765")
+    async with websockets.serve(handler, SERVER_URL, 8765, ping_interval=None):
+        print(f"WebSocket server running on ws://{SERVER_URL}:8765")
         await asyncio.Future()  # run forever
 
 if __name__ == "__main__":
