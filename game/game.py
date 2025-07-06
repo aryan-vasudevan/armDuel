@@ -115,7 +115,6 @@ def game(stdscr):
             time.sleep(0.5)
             last_msg[player] = ""
         else:
-            last_msg[player] = "❌ Incorrect! 3s cooldown..."
             cooldown_until[player] = now + 3
 
 if __name__ == "__main__":

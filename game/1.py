@@ -28,8 +28,7 @@ app = tk.Tk()
 app.title("ArmDuel")
 app.geometry("500x400")
 app.resizable(False, False)
-
-SERVER_URL = "ws://localhost:8765"
+SERVER_URL = os.getenv("SERVER_URL")
 ws = None
 loop = asyncio.new_event_loop()
 player_name = ""
