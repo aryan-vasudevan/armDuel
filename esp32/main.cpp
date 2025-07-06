@@ -1,81 +1,152 @@
 #include <WiFi.h>
 #include "ESP32Servo.h"
-#include "playerMove.cpp"
-#include <string>
+#include <cmath>
 
 // const char* ssid = "network name";
 // const char* password = "network password";
 
 WiFiServer server(12345);
 
-// Servo settings
+// Servo + game state
 Servo playerServo;
 int servoPin = 13;
-int playerPos = 90;              // Start in middle
-int stepForward = 2;             // Auto push forward step
+int playerPos = 90;       
+const int DELTA = 15;     
+bool gameEnd = false;
+bool greenWon = false;
+int buzzerPin = 4;
 
-// Servo moves forward every 100ms
-unsigned long lastMoveTime = 0;
-unsigned long moveInterval = 100;
+// LEDs
+int redLEDPins[6]   = {12,14,26,25,33,32};
+int greenLEDPins[6] = {22,21,19,18,17,16};
+
+int numRedOn = 0;
+int numGreenOn = 0;
+
+// Blink timing
+unsigned long lastBlinkTime = 0;
+int blinkInterval = 500;
+bool ledState = false;
 
 void setup() {
     Serial.begin(115200);
     WiFi.begin(ssid, password);
-
     while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+        delay(500);
+        Serial.print(".");
     }
+    Serial.println("\nWiFi connected, IP: " + WiFi.localIP());
 
-    // Log WiFi
-    Serial.println();
-    Serial.print("Connected to WiFi\nIP: ");
-    Serial.println(WiFi.localIP());
-
-    // Log server
     server.begin();
-    Serial.println("Server started on port 12345");
+    Serial.println("Server listening on port 12345");
 
-    // Servo
+    // Setup servo
     playerServo.attach(servoPin);
     playerServo.write(playerPos);
+
+    // Setup pins
+    pinMode(buzzerPin, OUTPUT);
+    for (int i = 0; i < 6; i++) {
+        pinMode(redLEDPins[i], OUTPUT);
+        pinMode(greenLEDPins[i], OUTPUT);
+    }
 }
 
 void loop() {
     WiFiClient client = server.accept();
-
     if (client) {
         Serial.println("Client connected");
 
-        while (client.connected()) {
-            // 1 player mode resistance
-            // unsigned long now = millis();
-            // if (now - lastMoveTime >= moveInterval) {
-            //     lastMoveTime = now;
-            //     if (playerPos < 180) {
-            //         playerPos += stepForward;
-            //         playerServo.write(playerPos);
-            //         Serial.println(playerPos);
-            //     }
-            // }
-
-            // Handle incoming command
+        while (client.connected() && !gameEnd) {
             if (client.available()) {
-                String command = client.readStringUntil('\n');
-                command.trim();
+                String cmd = client.readStringUntil('\n');
+                cmd.trim();
+                Serial.println("Cmd: " + cmd);
 
-                Serial.print("Received: ");
-                Serial.println(command);
+                if (cmd == "MOVE_PLAYER_A") {
+                    playerPos = max(playerPos - DELTA, 0);
+                    playerServo.write(playerPos);
+                    client.println("OK");
+                }
+                else if (cmd == "MOVE_PLAYER_B") {
+                    playerPos = min(playerPos + DELTA, 180);
+                    playerServo.write(playerPos);
+                    client.println("OK");
+                }
+                else if (cmd == "RESET") {
+                    playerPos = 90;
+                    playerServo.write(playerPos);
+                    gameEnd = false;
+                    client.println("OK");
+                }
+                else {
+                    client.println("ERR");
+                }
 
-                playerMove(command);
+                // Check win thresholds
+                if (playerPos <= 15) {
+                    gameEnd = true;
+                    greenWon = true;
+                    Serial.println("GREEN WINS!");
+                    client.println("WIN_GREEN");
+                }
+                else if (playerPos >= 165) {
+                    gameEnd = true;
+                    greenWon = false;
+                    Serial.println("RED WINS!");
+                    client.println("WIN_RED");
+                }
 
                 client.flush();
             }
 
-            delay(10);
+            // Always update LEDs/blink
+            updateLEDs();
         }
 
+        client.stop();
         Serial.println("Client disconnected");
-        client.stop();  // only stop if the client disconnects itself
+    } else {
+        // no client connected: keep blinking LEDs
+        updateLEDs();
+        Serial.println(playerPos);
+    }
+}
+
+// Updates LEDs each loop:
+void updateLEDs() {
+    unsigned long now = millis();
+
+    if (gameEnd) {
+    static unsigned long lastFlash = 0;
+        if (now - lastFlash > 250) {
+            lastFlash = now;
+            ledState = !ledState;
+            for (int i = 0; i < 6; i++) {
+                digitalWrite(greenLEDPins[i], greenWon && ledState);
+                digitalWrite(redLEDPins[i],   !greenWon && ledState);
+            }
+            digitalWrite(buzzerPin, ledState);
+        }
+    return;
+    }
+
+    // Compute how many LEDs to light
+    numGreenOn = (180 - playerPos) / 30; 
+    numRedOn   = 6 - numGreenOn;
+
+    // Map distance from center to blink interval
+    int distance = abs(playerPos - 90);
+    blinkInterval = map(distance, 0, 90, 800, 200);
+
+    // Toggle LEDs & buzzer at blinkInterval
+    if (now - lastBlinkTime >= blinkInterval) {
+        lastBlinkTime = now;
+        ledState = !ledState;
+        for (int i = 0; i < 6; i++) {
+            digitalWrite(greenLEDPins[i], ledState && (i < numGreenOn));
+            digitalWrite(redLEDPins[i],   ledState && (i < numRedOn));
+        }
+        digitalWrite(buzzerPin, ledState);
     }
 }
